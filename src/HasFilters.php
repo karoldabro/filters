@@ -14,7 +14,7 @@ trait HasFilters
      * @param array|null $order Order input array (defaults to request input)
      * @return Builder
      */
-    public function scopeFilter(Builder $query, string|Filter $name = null, ?array $input = null, ?array $order = null): Builder
+    public function scopeFilter(Builder $query, null|string|Filter $name = null, ?array $input = null, ?array $order = null): Builder
     {
         // Get filter instance
         $filterInstance = $this->resolveFilter($name);
