@@ -42,7 +42,7 @@ trait HasFilters
     /**
      * Resolve the filter instance
      */
-    protected function resolveFilter(string|Filter $name = null): Filter
+    protected function resolveFilter(null|string|Filter $name = null): Filter
     {
         // If a Filter instance is provided, use it directly
         if ($name instanceof Filter) {
