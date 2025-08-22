@@ -170,6 +170,32 @@ class HasFiltersTest extends TestCase
         $result = $model->scopeFilter($query, null, [], $orderInput);
         $this->assertSame($query, $result);
     }
+
+    public function testCustomFiltersAreAppliedEvenWithEmptyInput(): void
+    {
+        $model = new TestModelWithFilters();
+        $query = $this->createMock(Builder::class);
+        $filter = new TestFilter();
+        
+        // Test that custom filters are applied even when no filter input is provided
+        $result = $model->scopeFilter($query, $filter, []);
+        
+        $this->assertSame($query, $result);
+        $this->assertTrue($filter->customFilterCalled, 'Custom filter should be called even with empty input');
+    }
+
+    public function testCustomFiltersAreAppliedWhenNoFilterInputProvided(): void
+    {
+        $model = new TestModelWithFilters();
+        $query = $this->createMock(Builder::class);
+        $filter = new TestFilter();
+        
+        // Test that custom filters are applied when input is null (no 'f' parameter passed)
+        $result = $model->scopeFilter($query, $filter, null);
+        
+        $this->assertSame($query, $result);
+        $this->assertTrue($filter->customFilterCalled, 'Custom filter should be called even when no input is provided');
+    }
 }
 
 class TestModelWithFilters extends Model
@@ -181,5 +207,11 @@ class TestModelWithFilters extends Model
 
 class TestFilter extends Filter
 {
-    // Custom filter for testing
+    public bool $customFilterCalled = false;
+    
+    public function filterCustomTest(Builder $builder): void
+    {
+        $this->customFilterCalled = true;
+        // Custom filter logic would go here
+    }
 }

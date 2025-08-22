@@ -22,11 +22,9 @@ trait HasFilters
         // Get input data
         $filterInput = $this->resolveInput($input);
         
-        // Apply filters if we have input
-        if (!empty($filterInput)) {
-            $filterInstance->load($filterInput, $this);
-            $filterInstance->apply($query);
-        }
+        // Apply filters (custom filters run regardless of input)
+        $filterInstance->load($filterInput, $this);
+        $filterInstance->apply($query);
         
         // Apply ordering
         $orderInput = $this->resolveOrderInput($order);
