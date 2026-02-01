@@ -266,6 +266,174 @@ fetch(url)
     .then(data => console.log(data));
 ```
 
+## JSON Column Filtering & Ordering
+
+Use the `column` option to map aliases to JSON column paths (using Laravel's `->` notation):
+
+### Model Setup
+
+```php
+class Event extends Model implements Filterable, Orderable
+{
+    use HasFilters;
+
+    protected $fillable = ['name', 'data'];
+
+    public function filters(): array
+    {
+        return [
+            // 'type' in the API maps to data->type in the database
+            'type' => ['allowedOperators' => ['=', 'in'], 'column' => 'data->type'],
+            'priority' => ['allowedOperators' => ['=', '>='], 'column' => 'data->priority'],
+            // Multi-level JSON paths are supported
+            'category' => ['allowedOperators' => ['='], 'column' => 'data->meta->category'],
+        ];
+    }
+
+    public function orders(): array
+    {
+        return [
+            'type' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->type'],
+            'priority' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->priority'],
+        ];
+    }
+}
+```
+
+### API Calls
+
+```bash
+# Filter by JSON column data->type
+GET /events?f[0][c]=type&f[0][o]==&f[0][v]=conference
+
+# Filter by nested JSON column data->meta->category
+GET /events?f[0][c]=category&f[0][o]==&f[0][v]=tech
+
+# Order by JSON column data->priority
+GET /events?o[0][c]=priority&o[0][v]=desc
+
+# Combined filter and order on JSON columns
+GET /events?f[0][c]=type&f[0][o]==&f[0][v]=conference&o[0][c]=priority&o[0][v]=desc
+```
+
+## Filter & Order Callbacks
+
+Override the default query building for specific columns using a callback (closure or invocable class).
+
+### Filter Callback with Closure
+
+```php
+class Order extends Model implements Filterable
+{
+    use HasFilters;
+
+    public function filters(): array
+    {
+        return [
+            'total' => [
+                'allowedOperators' => ['>=', '<='],
+                'callback' => function ($builder, $value, $operator, $queryType, $column) {
+                    // Convert dollars to cents for database storage
+                    $method = $queryType === 'or' ? 'orWhere' : 'where';
+                    $builder->$method('total_cents', $operator, (int)$value * 100);
+                },
+            ],
+        ];
+    }
+}
+```
+
+### Filter Callback with Invocable Class
+
+```php
+class Order extends Model implements Filterable
+{
+    use HasFilters;
+
+    public function filters(): array
+    {
+        return [
+            'status' => [
+                'allowedOperators' => ['='],
+                'callback' => OrderStatusFilter::class,
+            ],
+        ];
+    }
+}
+```
+
+```php
+class OrderStatusFilter
+{
+    public function __invoke($builder, $value, $operator, $queryType, $column): void
+    {
+        $method = $queryType === 'or' ? 'orWhere' : 'where';
+
+        match ($value) {
+            'overdue' => $builder->$method('due_at', '<', now())->where('paid_at', null),
+            'fulfilled' => $builder->$method('status', 'shipped')->whereNotNull('delivered_at'),
+            default => $builder->$method('status', $operator, $value),
+        };
+    }
+}
+```
+
+### Order Callback
+
+```php
+class Article extends Model implements Orderable
+{
+    use HasFilters;
+
+    public function orders(): array
+    {
+        return [
+            'relevance' => [
+                'allowedDirections' => ['desc'],
+                'callback' => function ($builder, $direction, $column) {
+                    $builder->orderByRaw('MATCH(title, body) AGAINST(?) DESC', [request('q')]);
+                },
+            ],
+            'popularity' => [
+                'allowedDirections' => ['asc', 'desc'],
+                'callback' => PopularityOrder::class,
+            ],
+        ];
+    }
+}
+```
+
+```php
+class PopularityOrder
+{
+    public function __invoke($builder, $direction, $column): void
+    {
+        $builder->withCount('views')->orderBy('views_count', $direction);
+    }
+}
+```
+
+### Callback Signatures
+
+| Type | Signature |
+|------|-----------|
+| Filter | `function($builder, $value, $operator, $queryType, $column): void` |
+| Order | `function($builder, $direction, $column): void` |
+
+**Parameters:**
+
+- `$builder` — The query builder instance
+- `$value` — The sanitized filter value (or `null` for null/nnull operators)
+- `$operator` — The filter operator (`=`, `like`, `in`, etc.)
+- `$queryType` — `'and'` or `'or'`
+- `$column` — The resolved column name (after alias resolution)
+- `$direction` — `'asc'` or `'desc'`
+
 ## Nested Conditions with 'f' Parameter
 
-Coming soon in next version - nested array support will work seamlessly with the 'f' parameter for complex grouped conditions.
+Create complex grouped conditions using nested arrays:
+
+```bash
+# (status='active' AND role='admin') OR (status='active' AND role='moderator')
+GET /users?f[0][0][c]=status&f[0][0][o]==&f[0][0][v]=active&f[0][1][c]=role&f[0][1][o]==&f[0][1][v]=admin&f[1][0][c]=status&f[1][0][o]==&f[1][0][v]=active&f[1][1][c]=role&f[1][1][o]==&f[1][1][v]=moderator&f[1][t]=or
+```

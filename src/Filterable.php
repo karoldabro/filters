@@ -8,7 +8,7 @@ namespace Kdabrow\Filters;
 interface Filterable
 {
 	/**
-	 * @return array<string, array{allowedOperators: string[], column?: string}>
+	 * @return array<string, array{allowedOperators: string[], column?: string, callback?: callable|string}>
 	 */
 	public function filters(): array;
 }

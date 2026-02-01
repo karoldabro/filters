@@ -8,7 +8,7 @@ namespace Kdabrow\Filters;
 interface Orderable
 {
 	/**
-	 * @return array<string, array{allowedDirections: string[], column?: string}>
+	 * @return array<string, array{allowedDirections: string[], column?: string, callback?: callable|string}>
 	 */
 	public function orders(): array;
 }

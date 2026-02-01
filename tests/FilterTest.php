@@ -17,6 +17,7 @@ class FilterTest extends TestCase
     {
         parent::setUp();
         $this->filter = new Filter();
+        TestInvocableFilter::reset();
     }
 
     public function testLoadMethodReturnsFilterInstance(): void
@@ -588,6 +589,159 @@ class FilterTest extends TestCase
         $this->filter->load($input, $model);
         $this->filter->apply($builder);
     }
+
+    public function testFilterableAllowedOperatorsAreEnforced(): void
+    {
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'name' => ['allowedOperators' => ['=']],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        // Send 'like' operator which is NOT in allowedOperators for 'name'
+        $input = [
+            ['c' => 'name', 'o' => 'like', 'v' => 'John'],
+        ];
+
+        // Filter should NOT be applied since 'like' is not allowed for 'name'
+        $builder->expects($this->never())
+            ->method('where');
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+    }
+
+    public function testFilterableAllowedOperatorsAllowValidOperator(): void
+    {
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'name' => ['allowedOperators' => ['=', 'like']],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        $input = [
+            ['c' => 'name', 'o' => 'like', 'v' => 'John'],
+        ];
+
+        // Filter should be applied since 'like' IS allowed for 'name'
+        $builder->expects($this->once())
+            ->method('where')
+            ->with('name', 'LIKE', '%John%');
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+    }
+
+    public function testFilterableJsonColumnAlias(): void
+    {
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'type' => ['allowedOperators' => ['='], 'column' => 'data->type'],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        $input = [
+            ['c' => 'type', 'o' => '=', 'v' => 'active'],
+        ];
+
+        // Should resolve alias 'type' to 'data->type' and query with JSON path
+        $builder->expects($this->once())
+            ->method('where')
+            ->with('data->type', '=', 'active');
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+    }
+
+    public function testFilterCallbackWithInvocableClass(): void
+    {
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'status' => ['allowedOperators' => ['='], 'callback' => TestInvocableFilter::class],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        $input = [
+            ['c' => 'status', 'o' => '=', 'v' => 'active'],
+        ];
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+
+        // Verify the invocable was called with correct parameters
+        $this->assertTrue(TestInvocableFilter::$wasCalled, 'Invocable filter callback should have been called');
+        $this->assertSame('active', TestInvocableFilter::$receivedValue);
+        $this->assertSame('=', TestInvocableFilter::$receivedOperator);
+        $this->assertSame('and', TestInvocableFilter::$receivedQueryType);
+        $this->assertSame('status', TestInvocableFilter::$receivedColumn);
+    }
+
+    public function testFilterCallbackWithClosure(): void
+    {
+        $closureCalled = false;
+        $receivedArgs = [];
+
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'status' => [
+                'allowedOperators' => ['='],
+                'callback' => function ($builder, $value, $operator, $queryType, $column) use (&$closureCalled, &$receivedArgs) {
+                    $closureCalled = true;
+                    $receivedArgs = compact('value', 'operator', 'queryType', 'column');
+                },
+            ],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        $input = [
+            ['c' => 'status', 'o' => '=', 'v' => 'active'],
+        ];
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+
+        $this->assertTrue($closureCalled, 'Closure callback should have been called');
+        $this->assertSame('active', $receivedArgs['value']);
+        $this->assertSame('=', $receivedArgs['operator']);
+        $this->assertSame('and', $receivedArgs['queryType']);
+        $this->assertSame('status', $receivedArgs['column']);
+    }
+
+    public function testFilterCallbackWithColumnAlias(): void
+    {
+        $closureCalled = false;
+        $receivedColumn = null;
+
+        $model = $this->createMock(FilterableTestModel::class);
+        $model->method('filters')->willReturn([
+            'type' => [
+                'allowedOperators' => ['='],
+                'column' => 'data->type',
+                'callback' => function ($builder, $value, $operator, $queryType, $column) use (&$closureCalled, &$receivedColumn) {
+                    $closureCalled = true;
+                    $receivedColumn = $column;
+                },
+            ],
+        ]);
+
+        $builder = $this->createMock(Builder::class);
+
+        $input = [
+            ['c' => 'type', 'o' => '=', 'v' => 'active'],
+        ];
+
+        $this->filter->load($input, $model);
+        $this->filter->apply($builder);
+
+        $this->assertTrue($closureCalled);
+        // The resolved column (after alias) should be passed to callback
+        $this->assertSame('data->type', $receivedColumn);
+    }
 }
 
 // Mock class that implements Filterable for alias testing
@@ -596,5 +750,33 @@ class FilterableTestModel extends \Illuminate\Database\Eloquent\Model implements
     public function filters(): array
     {
         return [];
+    }
+}
+
+// Invocable class for callback testing
+class TestInvocableFilter
+{
+    public static bool $wasCalled = false;
+    public static mixed $receivedValue = null;
+    public static string $receivedOperator = '';
+    public static string $receivedQueryType = '';
+    public static string $receivedColumn = '';
+
+    public static function reset(): void
+    {
+        self::$wasCalled = false;
+        self::$receivedValue = null;
+        self::$receivedOperator = '';
+        self::$receivedQueryType = '';
+        self::$receivedColumn = '';
+    }
+
+    public function __invoke($builder, $value, $operator, $queryType, $column): void
+    {
+        self::$wasCalled = true;
+        self::$receivedValue = $value;
+        self::$receivedOperator = $operator;
+        self::$receivedQueryType = $queryType;
+        self::$receivedColumn = $column;
     }
 }

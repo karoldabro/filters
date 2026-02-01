@@ -52,13 +52,17 @@ class Ordering
             // Resolve alias to actual column name
             $column = $this->resolveColumnAlias($alias, $orderConfig);
 
-            // Sanitize column name
-            $column = $this->sanitizeColumnName($column);
-            if (empty($column)) {
-                continue;
-            }
+            if ($this->hasOrderCallback($alias, $orderConfig)) {
+                $this->applyOrderCallback($query, $column, $direction, $alias, $orderConfig);
+            } else {
+                // Sanitize column name
+                $column = $this->sanitizeColumnName($column);
+                if (empty($column)) {
+                    continue;
+                }
 
-            $query->orderBy($column, $direction);
+                $query->orderBy($column, $direction);
+            }
         }
 
         return $query;
@@ -156,11 +160,34 @@ class Ordering
         return $alias;
     }
 
+    private function hasOrderCallback(string $alias, array $orderConfig): bool
+    {
+        return !empty($orderConfig[$alias]['callback']);
+    }
+
+    private function applyOrderCallback(Builder $builder, string $column, string $direction, string $alias, array $orderConfig): void
+    {
+        $callback = $orderConfig[$alias]['callback'];
+
+        if (is_string($callback) && class_exists($callback)) {
+            $callback = new $callback();
+        }
+
+        $callback($builder, $direction, $column);
+    }
+
     /**
      * Sanitize column name to prevent SQL injection
      */
     private function sanitizeColumnName(string $column): string
     {
-        return preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        // Allow alphanumeric, underscores, and JSON arrow operator (->)
+        $sanitized = preg_replace('/[^a-zA-Z0-9_\->]/', '', $column);
+
+        // Clean up malformed -> sequences: no leading/trailing, no consecutive
+        $sanitized = preg_replace('/^(->)+|(->)+$/', '', $sanitized);
+        $sanitized = preg_replace('/(->){2,}/', '->', $sanitized);
+
+        return $sanitized;
     }
 }

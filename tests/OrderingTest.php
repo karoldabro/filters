@@ -20,8 +20,9 @@ class OrderingTest extends TestCase
         $this->ordering = new Ordering();
         $this->mockModel = $this->createMock(Model::class);
         $this->mockBuilder = $this->createMock(MockableBuilder::class);
-        
+
         $this->mockModel->method('getFillable')->willReturn(['name', 'email', 'age']);
+        TestInvocableOrder::reset();
     }
 
     public function testLoadReturnsInstance(): void
@@ -406,6 +407,128 @@ class OrderingTest extends TestCase
 
         $this->assertSame($this->mockBuilder, $result);
     }
+
+    public function testJsonColumnPreservedInSanitization(): void
+    {
+        $orderableModel = $this->createMock(TestOrderableModel::class);
+        $orderableModel->method('orders')->willReturn([
+            'type' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->type'],
+        ]);
+
+        $orders = [
+            ['c' => 'type', 'v' => 'asc'],
+        ];
+
+        // Should preserve 'data->type' JSON path after sanitization
+        $this->mockBuilder->expects($this->once())
+            ->method('orderBy')
+            ->with('data->type', 'asc')
+            ->willReturn($this->mockBuilder);
+
+        $this->ordering->load($orders, $orderableModel);
+        $result = $this->ordering->apply($this->mockBuilder);
+
+        $this->assertSame($this->mockBuilder, $result);
+    }
+
+    public function testMultiLevelJsonColumnPreserved(): void
+    {
+        $orderableModel = $this->createMock(TestOrderableModel::class);
+        $orderableModel->method('orders')->willReturn([
+            'deep_value' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->nested->deep'],
+        ]);
+
+        $orders = [
+            ['c' => 'deep_value', 'v' => 'desc'],
+        ];
+
+        // Should preserve multi-level JSON path
+        $this->mockBuilder->expects($this->once())
+            ->method('orderBy')
+            ->with('data->nested->deep', 'desc')
+            ->willReturn($this->mockBuilder);
+
+        $this->ordering->load($orders, $orderableModel);
+        $result = $this->ordering->apply($this->mockBuilder);
+
+        $this->assertSame($this->mockBuilder, $result);
+    }
+
+    public function testJsonColumnInjectionStillPrevented(): void
+    {
+        $orderableModel = $this->createMock(TestOrderableModel::class);
+        $orderableModel->method('orders')->willReturn([
+            'malicious' => ['allowedDirections' => ['asc'], 'column' => 'data->; DROP TABLE users;->type'],
+        ]);
+
+        $orders = [
+            ['c' => 'malicious', 'v' => 'asc'],
+        ];
+
+        // Dangerous characters (;, spaces) are stripped, leaving harmless identifier segments
+        $this->mockBuilder->expects($this->once())
+            ->method('orderBy')
+            ->with('data->DROPTABLEusers->type', 'asc')
+            ->willReturn($this->mockBuilder);
+
+        $this->ordering->load($orders, $orderableModel);
+        $result = $this->ordering->apply($this->mockBuilder);
+
+        $this->assertSame($this->mockBuilder, $result);
+    }
+
+    public function testOrderCallbackWithInvocableClass(): void
+    {
+        $orderableModel = $this->createMock(TestOrderableModel::class);
+        $orderableModel->method('orders')->willReturn([
+            'custom_sort' => [
+                'allowedDirections' => ['asc', 'desc'],
+                'column' => 'sort_column',
+                'callback' => TestInvocableOrder::class,
+            ],
+        ]);
+
+        $orders = [
+            ['c' => 'custom_sort', 'v' => 'desc'],
+        ];
+
+        $this->ordering->load($orders, $orderableModel);
+        $result = $this->ordering->apply($this->mockBuilder);
+
+        $this->assertTrue(TestInvocableOrder::$wasCalled, 'Invocable order callback should have been called');
+        $this->assertSame('desc', TestInvocableOrder::$receivedDirection);
+        $this->assertSame('sort_column', TestInvocableOrder::$receivedColumn);
+        $this->assertSame($this->mockBuilder, $result);
+    }
+
+    public function testOrderCallbackWithClosure(): void
+    {
+        $closureCalled = false;
+        $receivedArgs = [];
+
+        $orderableModel = $this->createMock(TestOrderableModel::class);
+        $orderableModel->method('orders')->willReturn([
+            'custom_sort' => [
+                'allowedDirections' => ['asc', 'desc'],
+                'column' => 'sort_column',
+                'callback' => function ($builder, $direction, $column) use (&$closureCalled, &$receivedArgs) {
+                    $closureCalled = true;
+                    $receivedArgs = compact('direction', 'column');
+                },
+            ],
+        ]);
+
+        $orders = [
+            ['c' => 'custom_sort', 'v' => 'asc'],
+        ];
+
+        $this->ordering->load($orders, $orderableModel);
+        $result = $this->ordering->apply($this->mockBuilder);
+
+        $this->assertTrue($closureCalled, 'Closure order callback should have been called');
+        $this->assertSame('asc', $receivedArgs['direction']);
+        $this->assertSame('sort_column', $receivedArgs['column']);
+    }
 }
 
 // Mock class that extends Builder to provide orderBy method for testing
@@ -428,5 +551,27 @@ class TestOrderableModel extends Model implements Orderable
     public function orders(): array
     {
         return [];
+    }
+}
+
+// Invocable class for order callback testing
+class TestInvocableOrder
+{
+    public static bool $wasCalled = false;
+    public static string $receivedDirection = '';
+    public static string $receivedColumn = '';
+
+    public static function reset(): void
+    {
+        self::$wasCalled = false;
+        self::$receivedDirection = '';
+        self::$receivedColumn = '';
+    }
+
+    public function __invoke($builder, $direction, $column): void
+    {
+        self::$wasCalled = true;
+        self::$receivedDirection = $direction;
+        self::$receivedColumn = $column;
     }
 }

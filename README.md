@@ -8,10 +8,32 @@ A powerful filtering package for Laravel Eloquent models with support for dynami
 - **URL-based Filtering**: `GET /users?f[0][c]=name&f[0][o]=like&f[0][v]=John`
 - **Ordering Support**: `GET /users?o[0][c]=created_at&o[0][v]=desc`
 - **Column Aliases**: Hide real database columns from your API
+- **JSON Column Support**: Filter and order by JSON paths (`data->type`, `data->meta->category`)
+- **Filter & Order Callbacks**: Override query logic per column with closures or invocable classes
 - **Advanced Operators**: `=`, `!=`, `>`, `<`, `>=`, `<=`, `like`, `nlike`, `in`, `nin`, `null`, `nnull`
 - **Nested Conditions**: Complex grouping with AND/OR logic
 - **Security**: Built-in input sanitization and SQL injection prevention
 - **Model Interfaces**: `Filterable` and `Orderable` for fine-grained control
+
+## Upgrade Guide
+
+### Breaking Changes
+
+**`allowedOperators` are now enforced per column.** Previously, the `allowedOperators` defined in the `Filterable` interface were silently ignored — any globally valid operator would pass through. Now they are strictly enforced. If your `filters()` config restricts a column to `['=']`, sending `like` for that column will be rejected.
+
+**Action required:** Review your `Filterable` implementations and ensure that `allowedOperators` includes all operators your API consumers use. For example, if you had:
+
+```php
+'name' => ['allowedOperators' => ['=']]
+```
+
+And your API consumers send `like` queries on `name`, update the config:
+
+```php
+'name' => ['allowedOperators' => ['=', 'like']]
+```
+
+Models that do not implement `Filterable` (using `$fillable` only) are **not affected** — all global operators remain available.
 
 ## Installation
 
@@ -165,6 +187,106 @@ GET /products?f[0][c]=name&f[0][o]=like&f[0][v]=iPhone
 # Order by 'newest' (maps to created_at column)
 GET /products?o[0][c]=newest&o[0][v]=desc
 ```
+
+### JSON Column Filtering
+
+Filter and order by JSON column paths using the `column` alias:
+
+```php
+class Event extends Model implements Filterable, Orderable
+{
+    use HasFilters;
+
+    protected $fillable = ['name', 'data'];
+
+    public function filters(): array
+    {
+        return [
+            'type' => ['allowedOperators' => ['=', 'in'], 'column' => 'data->type'],
+            'priority' => ['allowedOperators' => ['=', '>=', '<='], 'column' => 'data->priority'],
+            'category' => ['allowedOperators' => ['='], 'column' => 'data->meta->category'],
+        ];
+    }
+
+    public function orders(): array
+    {
+        return [
+            'type' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->type'],
+            'priority' => ['allowedDirections' => ['asc', 'desc'], 'column' => 'data->priority'],
+        ];
+    }
+}
+```
+
+```bash
+# Filter by JSON path data->type
+GET /events?f[0][c]=type&f[0][o]==&f[0][v]=conference
+
+# Order by JSON path data->priority
+GET /events?o[0][c]=priority&o[0][v]=desc
+```
+
+### Filter & Order Callbacks
+
+Override the default query logic for specific columns using a callback or an invocable class:
+
+```php
+class Order extends Model implements Filterable, Orderable
+{
+    use HasFilters;
+
+    public function filters(): array
+    {
+        return [
+            'status' => [
+                'allowedOperators' => ['='],
+                'callback' => OrderStatusFilter::class,
+            ],
+            'total' => [
+                'allowedOperators' => ['>=', '<='],
+                'callback' => function ($builder, $value, $operator, $queryType, $column) {
+                    $method = $queryType === 'or' ? 'orWhere' : 'where';
+                    $builder->$method('total_cents', $operator, (int)$value * 100);
+                },
+            ],
+        ];
+    }
+
+    public function orders(): array
+    {
+        return [
+            'relevance' => [
+                'allowedDirections' => ['desc'],
+                'callback' => function ($builder, $direction, $column) {
+                    $builder->orderByRaw('MATCH(title, description) AGAINST(?) DESC', [request('q')]);
+                },
+            ],
+        ];
+    }
+}
+```
+
+**Invocable filter class:**
+
+```php
+class OrderStatusFilter
+{
+    public function __invoke($builder, $value, $operator, $queryType, $column): void
+    {
+        $method = $queryType === 'or' ? 'orWhere' : 'where';
+
+        match ($value) {
+            'overdue' => $builder->$method('due_at', '<', now())->where('paid_at', null),
+            default => $builder->$method('status', $operator, $value),
+        };
+    }
+}
+```
+
+**Callback signatures:**
+
+- Filter: `function($builder, $value, $operator, $queryType, $column): void`
+- Order: `function($builder, $direction, $column): void`
 
 ## Controller Usage
 

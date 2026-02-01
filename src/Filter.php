@@ -179,11 +179,17 @@ class Filter
                 }
             } else {
                 // Regular filter - validate and apply with alias resolution
-                $validFilter = $this->validateFilter($filter, $fillable);
+                $validFilter = $this->validateFilter($filter, $fillable, $filterConfig);
                 if ($validFilter) {
+                    $alias = $validFilter['c'];
                     // Resolve alias to actual column name
                     $resolvedFilter = $this->resolveFilterAlias($validFilter, $filterConfig);
-                    $this->applyFilterToBuilder($builder, $resolvedFilter);
+
+                    if ($this->hasFilterCallback($alias, $filterConfig)) {
+                        $this->applyFilterCallback($builder, $resolvedFilter, $alias, $filterConfig);
+                    } else {
+                        $this->applyFilterToBuilder($builder, $resolvedFilter);
+                    }
                 }
             }
             
@@ -202,44 +208,64 @@ class Filter
         return false;
     }
     
-    private function validateFilter(array $filter, array $fillable): ?array
+    private function validateFilter(array $filter, array $fillable, array $filterConfig = []): ?array
     {
         // Validate basic filter structure (column and operator are always required)
         if (!isset($filter['c'], $filter['o'])) {
             return null;
         }
-        
+
         // Check if value is required for this operator
         if (!in_array($filter['o'], ['null', 'nnull']) && !isset($filter['v'])) {
             return null;
         }
-        
+
         // Set default query type
         if (!isset($filter['t'])) {
             $filter['t'] = 'and';
         }
-        
+
         // Validate allowed column names
         if (!in_array($filter['c'], $fillable)) {
             return null;
         }
-        
-        // Validate allowed operators
-        if (!in_array($filter['o'], $this->operators)) {
+
+        // Validate allowed operators (per-column if config exists, global otherwise)
+        if (!empty($filterConfig) && isset($filterConfig[$filter['c']]['allowedOperators'])) {
+            if (!in_array($filter['o'], $filterConfig[$filter['c']]['allowedOperators'])) {
+                return null;
+            }
+        } elseif (!in_array($filter['o'], $this->operators)) {
             return null;
         }
-        
+
         // Validate query type
         if (!in_array($filter['t'], $this->queryTypes)) {
             return null;
         }
-        
+
         // Sanitize input value (only if value is provided)
         if (isset($filter['v'])) {
             $filter['v'] = $this->sanitizeValue($filter['v']);
         }
-        
+
         return $filter;
+    }
+
+    private function hasFilterCallback(string $alias, array $filterConfig): bool
+    {
+        return !empty($filterConfig[$alias]['callback']);
+    }
+
+    private function applyFilterCallback(Builder|EloquentBuilder $builder, array $filter, string $alias, array $filterConfig): void
+    {
+        $callback = $filterConfig[$alias]['callback'];
+
+        if (is_string($callback) && class_exists($callback)) {
+            $callback = new $callback();
+        }
+
+        $callback($builder, $filter['v'] ?? null, $filter['o'], $filter['t'] ?? 'and', $filter['c']);
     }
 
     /**
